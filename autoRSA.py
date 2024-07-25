@@ -56,13 +56,13 @@ SUPPORTED_BROKERS = [
     "webull",
 ]
 DAY1_BROKERS = [
-    "chase",
+    # "chase",
     "fennel",
     "firstrade",
     "public",
-    "robinhood",
+    # "robinhood",
     "schwab",
-    "tastytrade",
+    # "tastytrade",
     "tradier",
     "webull",
 ]
