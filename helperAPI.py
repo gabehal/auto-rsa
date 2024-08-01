@@ -4,16 +4,22 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import textwrap
+import traceback
+from pathlib import Path
 from queue import Queue
+from threading import Thread
 from time import sleep
 
+import pkg_resources
 import requests
+from discord.ext import commands
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromiumService
 from selenium.webdriver.edge.service import Service as EdgeService
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 # Create task queue
 task_queue = Queue()
@@ -32,12 +38,12 @@ class stockOrder:
         self.__holdings: bool = False  # Get holdings from enabled brokerages
         self.__logged_in: dict = {}  # Dict of logged in brokerage objects
 
-    def set_action(self, action: str) -> None or ValueError:
+    def set_action(self, action: str) -> None | ValueError:
         if action.lower() not in ["buy", "sell"]:
             raise ValueError("Action must be buy or sell")
         self.__action = action.lower()
 
-    def set_amount(self, amount: float) -> None or ValueError:
+    def set_amount(self, amount: float) -> None | ValueError:
         # Only allow floats
         try:
             amount = float(amount)
@@ -45,16 +51,21 @@ class stockOrder:
             raise ValueError(f"Amount ({amount}) must be a number")
         self.__amount = amount
 
-    def set_stock(self, stock: str) -> None or ValueError:
+    def set_stock(self, stock: str) -> None | ValueError:
         # Only allow strings for now
         if not isinstance(stock, str):
             raise ValueError("Stock must be a string")
         self.__stock.append(stock.upper())
 
-    def set_time(self, time) -> None or NotImplementedError:
-        raise NotImplementedError
+    def set_time(self, time):
+        # Only allow strings for now
+        if not isinstance(time, str):
+            raise ValueError("Time must be a string")
+        if time.lower() not in ["day", "gtc"]:
+            raise ValueError("Time must be day or gtc")
+        self.__time = time.lower()
 
-    def set_price(self, price: str or float) -> None or ValueError:
+    def set_price(self, price: str | float) -> None | ValueError:
         # Only "market" or float
         if not isinstance(price, (str, float)):
             raise ValueError("Price must be a string or float")
@@ -64,7 +75,7 @@ class stockOrder:
             price = price.lower()
         self.__price = price
 
-    def set_brokers(self, brokers: list) -> None or ValueError:
+    def set_brokers(self, brokers: list) -> None | ValueError:
         # Only allow strings or lists
         if not isinstance(brokers, (str, list)):
             raise ValueError("Brokers must be a string or list")
@@ -74,7 +85,7 @@ class stockOrder:
         else:
             self.__brokers.append(brokers.lower())
 
-    def set_notbrokers(self, notbrokers: list) -> None or ValueError:
+    def set_notbrokers(self, notbrokers: list) -> None | ValueError:
         # Only allow strings or lists
         if not isinstance(notbrokers, str):
             raise ValueError("Not Brokers must be a string")
@@ -84,13 +95,13 @@ class stockOrder:
         else:
             self.__notbrokers.append(notbrokers.lower())
 
-    def set_dry(self, dry: bool) -> None or ValueError:
+    def set_dry(self, dry: bool) -> None | ValueError:
         # Only allow bools
         if not isinstance(dry, bool):
             raise ValueError("Dry must be a boolean")
         self.__dry = dry
 
-    def set_holdings(self, holdings: bool) -> None or ValueError:
+    def set_holdings(self, holdings: bool) -> None | ValueError:
         # Only allow bools
         if not isinstance(holdings, bool):
             raise ValueError("Holdings must be a boolean")
@@ -111,7 +122,7 @@ class stockOrder:
     def get_time(self) -> str:
         return self.__time
 
-    def get_price(self) -> str or float:
+    def get_price(self) -> str | float:
         return self.__price
 
     def get_brokers(self) -> list:
@@ -141,7 +152,7 @@ class stockOrder:
         self.__brokers.sort()
         self.__notbrokers.sort()
 
-    def order_validate(self, preLogin=False) -> None or ValueError:
+    def order_validate(self, preLogin=False) -> None | ValueError:
         # Check for required fields (doesn't apply to holdings)
         if not self.__holdings:
             if self.__action is None:
@@ -224,7 +235,7 @@ class Brokerage:
         if account_name not in self.__holdings[parent_name]:
             self.__holdings[parent_name][account_name] = {}
         self.__holdings[parent_name][account_name][stock] = {
-            "quantity": round(float(quantity), 2),
+            "quantity": float(quantity),
             "price": round(float(price), 2),
             "total": round(float(quantity) * float(price), 2),
         }
@@ -247,7 +258,7 @@ class Brokerage:
     def get_name(self) -> str:
         return self.__name
 
-    def get_account_numbers(self, parent_name: str = None) -> list or dict:
+    def get_account_numbers(self, parent_name: str = None) -> list | dict:
         if parent_name is None:
             return self.__account_numbers
         return self.__account_numbers.get(parent_name, [])
@@ -295,47 +306,165 @@ class Brokerage:
         )
 
 
+class ThreadHandler:
+    def __init__(self, func, *args, **kwargs):
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self._active_threads = []
+        self.queue = Queue()
+        self.thread = Thread(target=self._run)
+
+    def _run(self):
+        try:
+            result = self.func(*self.args, **self.kwargs)
+            self.queue.put((result, None))
+        except Exception as e:
+            print(traceback.print_exc())
+            self.queue.put((None, e))
+
+    def start(self):
+        self.thread.start()
+
+    def join(self):
+        self.thread.join()
+
+    def get_result(self):
+        return self.queue.get()
+
+
 def updater():
-    # Check if disabled
-    if os.getenv("ENABLE_AUTO_UPDATE", "").lower() == "false":
-        print("Auto update disabled, skipping...")
-        print()
-        return
     # Check if git is installed
     try:
         import git
         from git import Repo
     except ImportError:
         print(
-            "UPDATE ERROR: GitPython not installed. Please install Git and then run pip install -r requirements.txt"
+            "UPDATE ERROR: Git is not installed. Please install Git and then run pip install -r requirements.txt"
         )
         print()
         return
-    print("Starting auto update. To disable, set ENABLE_AUTO_UPDATE to false in .env")
+    print("Starting auto update...")
     try:
         repo = Repo(".")
     except git.exc.InvalidGitRepositoryError:
-        # If downloaded as zip, repo won't exist, so clone it
+        # If downloaded as zip, repo won't exist, so create it
         repo = Repo.init(".")
         repo.create_remote("origin", "https://github.com/NelsonDane/auto-rsa")
         repo.remotes.origin.fetch()
+        # Always create main branch
         repo.create_head("main", repo.remotes.origin.refs.main)
         repo.heads.main.set_tracking_branch(repo.remotes.origin.refs.main)
-        repo.heads.main.checkout(True)
-        print(f"Cloned repo from {repo.active_branch}.")
+        # If downloaded from other branch, zip has branch name
+        current_dir = Path.cwd()
+        if current_dir.name != "auto-rsa-main":
+            branch = str.replace(current_dir.name, "auto-rsa-", "")
+            try:
+                repo.create_head(branch, repo.remotes.origin.refs[branch])
+                repo.heads[branch].set_tracking_branch(repo.remotes.origin.refs[branch])
+                repo.heads[branch].checkout(True)
+            except:
+                print(f"No branch {branch} found, using main")
+        else:
+            repo.heads.main.checkout(True)
+        print(f"Cloned repo from {repo.active_branch}")
     if repo.is_dirty():
         # Print warning and let users take care of changes themselves
         print(
             "UPDATE ERROR: Conflicting changes found. Please commit, stash, or remove your changes before updating."
         )
+        print(f"Using commit {str(repo.head.commit)[:7]}")
         print()
         return
     if not repo.bare:
-        repo.remotes.origin.pull()
-        print(f"Pulled lates changes from {repo.active_branch}.")
-    print("Update complete!")
+        try:
+            repo.remotes.origin.pull(repo.active_branch)
+            print(f"Pulled latest changes from {repo.active_branch}")
+        except Exception as e:
+            print(
+                f"UPDATE ERROR: Cannot pull from {repo.active_branch}. Local repository is not set up correctly: {e}"
+            )
+            print()
+            return
+    print(f"Update complete! Using commit {str(repo.head.commit)[:7]}")
     print()
     return
+
+
+def check_package_versions():
+    print("Checking package versions...")
+    # Check if pip packages are up to date
+    required_packages = []
+    required_repos = []
+    f = open("requirements.txt", "r")
+    for line in f:
+        # Not commented pip packages
+        if not line.startswith("#") and "==" in line:
+            required_packages.append(line.strip())
+        # Not commented git repos
+        elif not line.startswith("#") and "git+" in line:
+            required_repos.append(line.strip())
+    SHOULD_CONTINUE = True
+    for package in required_packages:
+        if "==" not in package:
+            continue
+        package_name = package.split("==")[0].lower()
+        required_version = package.split("==")[1]
+        installed_version = pkg_resources.get_distribution(package_name).version
+        if installed_version < required_version:
+            print(
+                f"Required package {package_name} is out of date (Want {required_version} but have {installed_version})."
+            )
+            SHOULD_CONTINUE = False
+        elif installed_version > required_version:
+            print(
+                f"WARNING: Required package {package_name} is newer than required (Want {required_version} but have {installed_version})."
+            )
+    for repo in required_repos:
+        repo_name = repo.split("/")[-1].split(".")[0].lower()
+        package_name = repo.split("egg=")[-1].lower()
+        required_version = repo.split("@")[-1].split("#")[0]
+        if len(required_version) != 40:
+            # Invalid hash
+            print(f"Required repo {repo_name} has invalid hash {required_version}.")
+            continue
+        package_data = subprocess.run(
+            ["pip", "show", package_name], capture_output=True, text=True, check=True
+        ).stdout
+        if "Editable project location:" in package_data:
+            epl = (
+                package_data.split("Editable project location:")[1]
+                .split("\n")[0]
+                .strip()
+            )
+            installed_hash = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                cwd=epl,
+                text=True,
+                check=True,
+            )
+            installed_hash = installed_hash.stdout.strip()
+            if installed_hash != required_version:
+                print(
+                    f"Required repo {repo_name} is out of date (Want {required_version} but have {installed_hash})."
+                )
+                SHOULD_CONTINUE = False
+        else:
+            print(
+                f"Required repo {repo_name} is installed as a package, not a git repo."
+            )
+            SHOULD_CONTINUE = False
+            continue
+    if not SHOULD_CONTINUE:
+        print(
+            'Please run "pip install -r requirements.txt" to install/update required packages.'
+        )
+        sys.exit(1)
+    else:
+        print("All required packages are installed and up to date.")
+        print()
+        return
 
 
 def type_slowly(element, string, delay=0.3):
@@ -373,7 +502,7 @@ def getDriver(DOCKER=False):
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_argument("--disable-notifications")
             driver = webdriver.Edge(
-                service=EdgeService(EdgeChromiumDriverManager().install()),
+                service=EdgeService(),
                 options=options,
             )
     except Exception as e:
@@ -398,7 +527,7 @@ def killSeleniumDriver(brokerObj: Brokerage):
             print(f"Killed {count} {brokerObj.get_name()} drivers")
 
 
-async def processTasks(message):
+async def processTasks(message, embed=False):
     # Get details from env (they are used prior so we know they exist)
     load_dotenv()
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -410,7 +539,8 @@ async def processTasks(message):
         "Content-Type": "application/json",
     }
     PAYLOAD = {
-        "content": message,
+        "content": "" if embed else message,
+        "embeds": [message] if embed else [],
     }
     # Keep trying until success
     success = False
@@ -432,12 +562,13 @@ async def processTasks(message):
     sleep(0.5)
 
 
-def printAndDiscord(message, loop=None):
+def printAndDiscord(message, loop=None, embed=False):
     # Print message
-    print(message)
+    if not embed:
+        print(message)
     # Add message to discord queue
     if loop is not None:
-        task_queue.put((message))
+        task_queue.put((message, embed))
         if task_queue.qsize() == 1:
             asyncio.run_coroutine_threadsafe(processQueue(), loop)
 
@@ -445,9 +576,47 @@ def printAndDiscord(message, loop=None):
 async def processQueue():
     # Process discord queue
     while not task_queue.empty():
-        message = task_queue.get()
-        await processTasks(message)
+        message, embed = task_queue.get()
+        await processTasks(message, embed)
         task_queue.task_done()
+
+
+async def getOTPCodeDiscord(
+    botObj: commands.Bot, brokerName, code_len=6, timeout=60, loop=None
+):
+    printAndDiscord(f"{brokerName} requires OTP code", loop)
+    printAndDiscord(
+        f"Please enter OTP code or type cancel within {timeout} seconds", loop
+    )
+    # Get OTP code from Discord
+    while True:
+        try:
+            code = await botObj.wait_for(
+                "message",
+                # Ignore bot messages and messages not in the correct channel
+                check=lambda m: m.author != botObj.user
+                and m.channel.id == int(os.getenv("DISCORD_CHANNEL")),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            printAndDiscord(
+                f"Timed out waiting for OTP code input for {brokerName}", loop
+            )
+            return None
+        if code.content.lower() == "cancel":
+            printAndDiscord(f"Cancelling OTP code for {brokerName}", loop)
+            return None
+        try:
+            # Check if code is numbers only
+            int(code.content)
+        except ValueError:
+            printAndDiscord("OTP code must be numbers only", loop)
+            continue
+        # Check if code is correct length
+        if len(code.content) != code_len:
+            printAndDiscord(f"OTP code must be {code_len} digits", loop)
+            continue
+        return code.content
 
 
 def maskString(string):
@@ -459,28 +628,37 @@ def maskString(string):
     return masked
 
 
-def printHoldings(brokerObj: Brokerage, loop=None):
+def printHoldings(brokerObj: Brokerage, loop=None, mask=True):
     # Helper function for holdings formatting
-    printAndDiscord(
-        f"==============================\n{brokerObj.get_name()} Holdings\n==============================",
-        loop,
+    EMBED = {
+        "title": f"{brokerObj.get_name()} Holdings",
+        "color": 3447003,
+        "fields": []
+    }
+    print(
+        f"==============================\n{brokerObj.get_name()} Holdings\n=============================="
     )
     for key in brokerObj.get_account_numbers():
         for account in brokerObj.get_account_numbers(key):
-            printAndDiscord(f"{key} ({maskString(account)}):", loop)
+            acc_name = f"{key} ({maskString(account) if mask else account})"
+            field = {
+                "name": acc_name,
+                "inline": False,
+            }
+            print(acc_name)
+            print_string = ""
             holdings = brokerObj.get_holdings(key, account)
             if holdings == {}:
-                printAndDiscord("No holdings in Account\n", loop)
+                print_string += "No holdings in Account\n"
             else:
-                print_string = ""
                 for stock in holdings:
                     quantity = holdings[stock]["quantity"]
                     price = holdings[stock]["price"]
                     total = holdings[stock]["total"]
                     print_string += f"{stock}: {quantity} @ ${format(price, '0.2f')} = ${format(total, '0.2f')}\n"
-                printAndDiscord(print_string, loop)
-            printAndDiscord(
-                f"Total: ${format(brokerObj.get_account_totals(key, account), '0.2f')}\n",
-                loop,
-            )
-    printAndDiscord("==============================", loop)
+            print_string += f"Total: ${format(brokerObj.get_account_totals(key, account), '0.2f')}\n"
+            print(print_string)
+            field["value"] = print_string
+            EMBED["fields"].append(field)
+    printAndDiscord(EMBED, loop, True)
+    print("==============================")

@@ -83,16 +83,16 @@ def fidelity_init(FIDELITY_EXTERNAL=None, DOCKER=False):
             try:
                 WebDriverWait(driver, 10).until(
                     expected_conditions.element_to_be_clickable(
-                        (By.CSS_SELECTOR, "#userId-input")
+                        (By.CSS_SELECTOR, "#dom-username-input")
                     )
                 )
-                username_selector = "#userId-input"
-                password_selector = "#password"
-                login_btn_selector = "#fs-login-button"
-            except TimeoutException:
                 username_selector = "#dom-username-input"
                 password_selector = "#dom-pswd-input"
                 login_btn_selector = "#dom-login-button > div"
+            except TimeoutException:
+                username_selector = "#userId-input"
+                password_selector = "#password"
+                login_btn_selector = "#fs-login-button"
             WebDriverWait(driver, 10).until(
                 expected_conditions.element_to_be_clickable(
                     (By.CSS_SELECTOR, username_selector)
@@ -109,6 +109,27 @@ def fidelity_init(FIDELITY_EXTERNAL=None, DOCKER=False):
             driver.find_element(by=By.CSS_SELECTOR, value=login_btn_selector).click()
             WebDriverWait(driver, 10).until(check_if_page_loaded)
             sleep(3)
+            try:
+                # Look for: Sorry, we can't complete this action right now. Please try again.
+                go_back_selector = "#dom-sys-err-go-to-login-button > span > s-slot > s-assigned-wrapper"
+                WebDriverWait(driver, 10).until(
+                    expected_conditions.element_to_be_clickable(
+                        (By.CSS_SELECTOR, go_back_selector)
+                    ),
+                ).click()
+                username_field = driver.find_element(
+                    by=By.CSS_SELECTOR, value=username_selector
+                )
+                type_slowly(username_field, account[0])
+                password_field = driver.find_element(
+                    by=By.CSS_SELECTOR, value=password_selector
+                )
+                type_slowly(password_field, account[1])
+                driver.find_element(
+                    by=By.CSS_SELECTOR, value=login_btn_selector
+                ).click()
+            except TimeoutException:
+                pass
             # Wait for page to load to summary page
             if "summary" not in driver.current_url:
                 if "errorpage" in driver.current_url.lower():
@@ -157,7 +178,7 @@ def fidelity_init(FIDELITY_EXTERNAL=None, DOCKER=False):
     return fidelity_obj
 
 
-def fidelity_account_info(driver: webdriver) -> dict or None:
+def fidelity_account_info(driver: webdriver) -> dict | None:
     try:
         # Get account holdings
         driver.get("https://digital.fidelity.com/ftgw/digital/portfolio/positions")
@@ -197,6 +218,7 @@ def fidelity_account_info(driver: webdriver) -> dict or None:
                 .replace("$", "")
                 .replace(",", "")
                 .replace("»", "")
+                .replace("‡", "")
                 .replace("balance:", "")
             )
             account_dict[account] = {
@@ -233,11 +255,11 @@ def fidelity_holdings(fidelity_o: Brokerage, loop=None):
                 stocks_list = javascript_get_classname(
                     driver, "ag-pinned-left-cols-container"
                 )
-                # Find 3 or 4 letter words surrounded by 2 spaces on each side
+                # Find 1-5 letter words surrounded by 2 spaces on each side
                 for i in range(len(stocks_list)):
                     stocks_list[i].replace(" \n ", "").replace("*", "")
                     stocks_list[i] = re.findall(
-                        r"(?<=\s{2})[a-zA-Z]{3,4}(?=\s{2})", stocks_list[i]
+                        r"(?<=\s{2})[a-zA-Z]{1,5}(?=\s{2})", stocks_list[i]
                     )
                 stocks_list = stocks_list[0]
                 # holdings_info = javascript_get_classname(
@@ -289,14 +311,13 @@ def fidelity_transaction(fidelity_o: Brokerage, orderObj: stockOrder, loop=None)
                     by=By.CSS_SELECTOR, value="#ett-acct-sel-list"
                 )
                 accounts_list = test.find_elements(by=By.CSS_SELECTOR, value="li")
-                print(f"Number of accounts: {len(accounts_list)}")
                 number_of_accounts = len(accounts_list)
                 # Click a second time to clear the account list
                 driver.execute_script("arguments[0].click();", accounts_dropdown)
             except Exception as e:
-                print(f"Error: No accounts foundin dropdown: {e}")
-                traceback.print_exc()
-                return
+                fidelity_error(driver, f"No accounts found in dropdown: {e}")
+                killSeleniumDriver(fidelity_o)
+                return None
             # Complete on each account
             # Because of stale elements, we need to re-find the elements each time
             for x in range(number_of_accounts):
@@ -333,27 +354,22 @@ def fidelity_transaction(fidelity_o: Brokerage, orderObj: stockOrder, loop=None)
                     try:
                         driver.find_element(
                             by=By.CSS_SELECTOR,
-                            value="body > div.app-body > ap122489-ett-component > div > order-entry > div.eq-ticket.order-entry__container-height > div > div > form > div.order-entry__container-content.scroll > div:nth-child(2) > symbol-search > div > div.eq-ticket--border-top > div > div:nth-child(2) > div > div > div > pvd3-inline-alert > s-root > div > div.pvd-inline-alert__content > s-slot > s-assigned-wrapper",
+                            value="body > div.app-body > ap122489-ett-component > div > order-entry-base > div > div > div.order-entry__container-content.scroll > div > equity-order-selection > div:nth-child(1) > symbol-search > div > div.eq-ticket--border-top > div > div:nth-child(2) > div > div > div > pvd3-inline-alert > s-root > div > div.pvd-inline-alert__content > s-slot > s-assigned-wrapper",
                         )
-                        print(f"Error: Symbol {s} not found")
-                        return
+                        printAndDiscord(f"{key} Error: Symbol {s} not found", loop)
+                        print()
+                        killSeleniumDriver(fidelity_o)
+                        return None
                     except Exception:
                         pass
-                    # Get ask/bid price
-                    ask_price = (
-                        driver.find_element(
-                            by=By.CSS_SELECTOR,
-                            value="#quote-panel > div > div.eq-ticket__quote--blocks-container > div:nth-child(2) > div > span > span",
-                        )
+                    # Get last price
+                    last_price = driver.find_element(
+                        by=By.CSS_SELECTOR,
+                        value="#eq-ticket__last-price > span.last-price",
                     ).text
-                    bid_price = (
-                        driver.find_element(
-                            by=By.CSS_SELECTOR,
-                            value="#quote-panel > div > div.eq-ticket__quote--blocks-container > div:nth-child(1) > div > span > span",
-                        )
-                    ).text
+                    last_price = last_price.replace("$", "")
                     # If price is under $1, then we have to use a limit order
-                    LIMIT = bool(float(ask_price) < 1 or float(bid_price) < 1)
+                    LIMIT = bool(float(last_price) < 1)
                     # Figure out whether page is in old or new style
                     try:
                         action_dropdown = driver.find_element(
@@ -438,11 +454,15 @@ def fidelity_transaction(fidelity_o: Brokerage, orderObj: stockOrder, loop=None)
                             )
                             limit_button.click()
                         # Set price
-                        difference_price = 0.01 if float(ask_price) > 0.1 else 0.001
+                        difference_price = 0.01 if float(last_price) > 0.1 else 0.0001
                         if orderObj.get_action() == "buy":
-                            wanted_price = round(float(ask_price) + difference_price, 3)
+                            wanted_price = round(
+                                float(last_price) + difference_price, 3
+                            )
                         else:
-                            wanted_price = round(float(bid_price) - difference_price, 3)
+                            wanted_price = round(
+                                float(last_price) - difference_price, 3
+                            )
                         if new_style:
                             price_box = driver.find_element(
                                 by=By.CSS_SELECTOR, value="#eqt-mts-limit-price"

@@ -1,9 +1,12 @@
 asyncio==3.4.3
-discord.py==2.3.2
-firstrade==0.0.12
-GitPython==3.1.41
-pandas==2.1.4
+chaseinvest-api==0.2.3
+discord.py==2.4.0
+fennel-invest-api==1.0.9.2
+firstrade==0.0.21
+GitPython==3.1.43
+public-invest-api==1.0.4
 pyotp==2.9.0
+<<<<<<< HEAD
 python-dotenv==1.0.0
 requests==2.31.0
 -e git+https://github.com/NelsonDane/robin_stocks.git@f490a2eb0d5fc53afc93e077b3ea2a555124e105#egg=robin_stocks
@@ -11,3 +14,14 @@ schwab-api==0.3.9
 selenium==4.16.0
 tastytrade==6.4
 webdriver-manager==4.0.1
+=======
+python-dotenv==1.0.1
+requests==2.32.3
+robin-stocks==3.1.0
+schwab-api==0.4.3
+selenium==4.23.1
+setuptools==71.1.0
+tastytrade==8.0
+vanguard-api==0.1.9
+-e git+https://github.com/NelsonDane/webull.git@ef14ae63f9e1436fbea77fe864df54847cf2f730#egg=webull
+>>>>>>> 15284d21978551ded2dad464a2f0efc87248af20
