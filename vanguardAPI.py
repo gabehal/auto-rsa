@@ -28,6 +28,8 @@ def vanguard_run(orderObj: stockOrder, command=None, botObj=None, loop=None):
         print("Vanguard not found, skipping...")
         return None
     accounts = os.environ["VANGUARD"].strip().split(",")
+    # Get headless flag
+    headless = os.getenv("HEADLESS", "true").lower() == "true"
     # Set the functions to be run
     _, second_command = command
 
@@ -36,6 +38,7 @@ def vanguard_run(orderObj: stockOrder, command=None, botObj=None, loop=None):
         success = vanguard_init(
             account=account,
             index=index,
+            headless=headless,
             botObj=botObj,
             loop=loop,
         )
@@ -48,7 +51,7 @@ def vanguard_run(orderObj: stockOrder, command=None, botObj=None, loop=None):
     return None
 
 
-def vanguard_init(account, index, botObj=None, loop=None):
+def vanguard_init(account, index, headless=True, botObj=None, loop=None):
     # Log in to Vanguard account
     print("Logging in to Vanguard...")
     vanguard_obj = Brokerage("VANGUARD")
@@ -58,7 +61,7 @@ def vanguard_init(account, index, botObj=None, loop=None):
         debug = bool(account[3]) if len(account) == 4 else False
         vg_session = session.VanguardSession(
             title=f"Vanguard_{index}",
-            headless=True,
+            headless=headless,
             profile_path="./creds",
             debug=debug,
         )
@@ -112,7 +115,7 @@ def vanguard_holdings(vanguard_o: Brokerage, loop=None):
                         for stock in all_accounts.accounts_positions[account][
                             account_type
                         ]:
-                            if float(stock["quantity"]) != 0:
+                            if float(stock["quantity"]) != 0 and stock["symbol"] != "—":
                                 vanguard_o.set_holdings(
                                     key,
                                     account,
@@ -167,6 +170,7 @@ def vanguard_transaction(vanguard_o: Brokerage, orderObj: stockOrder, loop=None)
                         duration=order.Duration.DAY,
                         order_type=order_type,
                         dry_run=orderObj.get_dry(),
+                        after_hours=True,
                     )
                     print("The order verification produced the following messages: ")
                     if (
